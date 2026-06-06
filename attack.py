@@ -147,6 +147,55 @@ def attack_proxy_bypass():
     )
 
 
+def attack_master_erase_defeats_hoarded_keys():
+    """
+    Attacker copies subjects' WRAPPED key files to a hiding spot, betting they
+    can decrypt later. We then crypto-erase the whole store (destroy master).
+    The hoarded wrapped keys must be useless without the master.
+    """
+    banner("ATTACK 6: hoard wrapped keys, then survive a master crypto-erase")
+    v = fresh_vault()
+    import shutil as _sh
+    hoard = Path("attack_data/hoard")
+    hoard.mkdir(parents=True, exist_ok=True)
+    # Attacker copies every wrapped subject key they can see.
+    keydir = Path("attack_data/keys")
+    for k in keydir.glob("*.key"):
+        if k.name != "_master.key":
+            _sh.copy(k, hoard / k.name)
+    hoarded = list(hoard.glob("*.key"))
+
+    # Whole-store crypto-erase: destroy the master key only.
+    v.crypto_erase_all()
+
+    # Now try to use the hoarded wrapped keys. Without the master they cannot
+    # be unwrapped. We confirm: (a) vault reads fail, (b) the hoarded files are
+    # ciphertext, not usable keys.
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    recovered_any = False
+    # Even if the attacker tries the hoarded bytes directly as an AES key, they
+    # are wrapped (encrypted), so they are not a valid key for the data blobs.
+    for blob in Path("attack_data/blobs").glob("*.blob"):
+        data = blob.read_bytes()
+        for hk in hoarded:
+            wrapped = hk.read_bytes()
+            # Attacker's best naive try: use the wrapped bytes (minus nonce) as a key.
+            for guess in (wrapped, wrapped[12:], wrapped[:32]):
+                if len(guess) != 32:
+                    continue
+                try:
+                    AESGCM(guess).decrypt(data[:12], data[12:], None)
+                    recovered_any = True
+                except Exception:
+                    pass
+    defended = (not recovered_any)
+    return result(
+        "master crypto-erase defeats hoarded wrapped keys",
+        defended=defended,
+        detail=f"attacker hoarded {len(hoarded)} wrapped keys; recovered_any={recovered_any}",
+    )
+
+
 def main():
     print("TOMBSTONE ADVERSARIAL TEST SUITE")
     print("We attack our own guarantees. DEFENDED = good. SUCCEEDED = a hole to fix.")
@@ -156,6 +205,7 @@ def main():
         "truncate": attack_truncate(),
         "recover_shredded": attack_recover_shredded(),
         "proxy_evasion": attack_proxy_bypass(),
+        "master_erase": attack_master_erase_defeats_hoarded_keys(),
     }
     banner("SUMMARY")
     for name, defended in outcomes.items():

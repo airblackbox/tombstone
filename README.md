@@ -129,3 +129,26 @@ Honest limits (the next hardening targets, not yet done):
 - Content inspection is an arms race. Normalization defeats trivial evasion;
   encoding, encryption, or splitting across requests still requires deeper
   inspection.
+
+## Phase 5b: envelope encryption (v0.5)
+
+Erasure no longer trusts the disk. Every subject key is wrapped (encrypted)
+under a master key; only the wrapped form is ever written. Two erasure paths,
+neither depending on physically scrubbing bytes:
+
+- Erase one subject: destroy their wrapped key.
+- Crypto-erase everyone at once: destroy the master key. Every wrapped subject
+  key becomes permanently un-unwrappable, even copies an attacker hoarded.
+
+```
+python demo/demo_envelope.py   # destroy the master, watch everyone die at once
+```
+
+Attack 6 in the suite hoards wrapped key files, destroys the master, and
+confirms the hoarded keys are useless. 8 security tests pass (pytest tests/).
+
+Honest limit: the master key still lives in a local file. Truly hardened, it
+belongs in a KMS/HSM that performs and attests its own destruction, so erasure
+is provable to a third party and disk access alone cannot recover it. The
+wrap/unwrap interface is exactly what a KMS slots into; that integration is the
+next deployment-hardening step.

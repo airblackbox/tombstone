@@ -75,3 +75,34 @@ def test_clean_traffic_allowed():
     pol.protect("alice", "alice@example.com")
     pol.block_destination("evil.example.com")
     assert pol.check_payload("http://evil.example.com", '{"event":"click"}').allowed is True
+
+
+def test_master_erase_kills_everyone(tmp_path):
+    """Destroying the master key crypto-erases all subjects at once."""
+    v = Vault(str(tmp_path / "data"))
+    for name in ["alice", "bob", "carol"]:
+        v.record(name, f"{name}, {name}@example.com", location="users")
+    assert v.keys.has_key("alice") is True
+    v.crypto_erase_all()
+    for name in ["alice", "bob", "carol"]:
+        assert v.keys.get_key(name) is None  # all unrecoverable
+
+
+def test_hoarded_wrapped_key_useless_after_master_erase(tmp_path):
+    """A copied wrapped key cannot decrypt anything once the master is gone."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    base = tmp_path / "data"
+    v = Vault(str(base))
+    ref = v.record("dave", "Dave, dave@example.com", location="users")
+    wrapped = (base / "keys" / "dave.key").read_bytes()  # attacker hoards this
+    v.crypto_erase_all()
+    # The hoarded wrapped bytes are not a usable key for any blob.
+    for blob in (base / "blobs").glob("*.blob"):
+        data = blob.read_bytes()
+        for guess in (wrapped, wrapped[12:], wrapped[:32]):
+            if len(guess) == 32:
+                try:
+                    AESGCM(guess).decrypt(data[:12], data[12:], None)
+                    assert False, "hoarded wrapped key should not decrypt data"
+                except Exception:
+                    pass

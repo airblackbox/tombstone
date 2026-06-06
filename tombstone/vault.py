@@ -194,6 +194,22 @@ class Vault:
         entry["key_was_destroyed"] = destroyed
         return entry
 
+    def crypto_erase_all(self) -> dict:
+        """
+        Whole-store cryptographic erasure: destroy the MASTER key. Every
+        subject's wrapped key on disk becomes permanently un-unwrappable, so
+        ALL data dies at once, even wrapped keys an attacker copied elsewhere,
+        without depending on physically scrubbing any subject file.
+
+        Records the event on the tamper-evident ledger.
+        """
+        from .keystore import KeyStore  # local import to avoid cycles
+        destroyed = self.keys.destroy_master()
+        marker = _sha256(b"CRYPTO-ERASE-ALL")
+        entry = self.ledger.append("system", "crypto_erase_all", marker)
+        entry["master_destroyed"] = destroyed
+        return entry
+
     def prove_erased(self, subject_id: str) -> dict:
         """
         Produce a proof bundle that a subject has been erased:
