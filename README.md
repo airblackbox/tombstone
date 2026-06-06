@@ -1,0 +1,96 @@
+# Tombstone
+
+Provable, crypto-shredded erasure on a tamper-evident ledger.
+
+You should not have to choose between a permanent audit trail and a person's
+right to be deleted. Tombstone gives you both. The audit log is append-only and
+tamper-evident. Erasing a person destroys their encryption key, which makes all
+of their data unrecoverable everywhere, even in copies you cannot see, without
+ever altering the log. The data is gone. The proof that it existed, and was
+deleted, remains. That is what a tombstone is.
+
+Runs locally. Your data never leaves your environment.
+
+## How it works
+
+- Personal data is encrypted with a per-subject key (AES-256-GCM) before it
+  touches disk.
+- The ledger stores only a SHA-256 commitment to the ciphertext, never the data.
+  Each entry is hash-chained to the previous one, so altering any past entry
+  breaks verification.
+- Erasure = destroying the subject's key (crypto-shredding). The ciphertext
+  becomes permanent noise. The ledger stays intact.
+
+## The five-step proof
+
+```
+python demo/demo.py
+```
+
+1. Store a subject's data (encrypted; ledger holds only a hash).
+2. Verify the ledger is tamper-evident.
+3. Read the data back (proves it was really stored).
+4. Erase the subject (destroy the key).
+5. Prove erasure: data is unrecoverable AND the ledger still verifies.
+
+## Status
+
+v0.1: the erasure core. This is the hard part, and it works.
+
+Roadmap (not built yet): lineage tracking across systems, a data-flow control
+gate, and an AI layer that detects and proposes remediation (with destructive
+actions gated by human approval).
+
+## Install
+
+```
+pip install cryptography
+```
+
+Apache 2.0.
+
+## Phase 2: lineage and containment (v0.2)
+
+Phase 1 erased data in one place. Phase 2 solves the real problem: data gets
+copied and derived across systems, and you have to cover all of it.
+
+- Lineage (2A): every copy/derivation is recorded as a flow on the ledger.
+  `vault.lineage.graph(subject)` shows where data went; `locations(subject)`
+  lists the full footprint; `trace(subject, start)` follows it downstream.
+- Containment (2B): copies stored via `vault.store_at(...)` inherit the
+  subject's one key, so destroying that key crypto-shreds every copy at once.
+  `vault.verify_erasure_coverage(subject)` walks every location and proves
+  each copy is unreadable after erasure.
+
+Demos:
+```
+python demo/demo_lineage.py      # trace the sprawl, erase across all of it
+python demo/demo_containment.py  # one key-shred kills every real copy
+```
+
+Honest scope: containment is guaranteed for data that went through Tombstone
+(it inherits the key). A plaintext copy made by bypassing Tombstone entirely
+cannot be crypto-shredded by anyone; lineage tracking is how you catch those
+flows and route them through the system in the first place.
+
+## Phase 3: flow-control proxy (v0.3)
+
+Phases 1 and 2 handle data at rest and its copies. Phase 3 stops data in
+motion: a real HTTP forward proxy that inspects request bodies and blocks
+personal-data leaks before they leave, recording every decision on the
+tamper-evident ledger.
+
+```
+python demo/demo_proxy.py
+```
+
+The demo starts a real destination server and a real proxy, then sends two
+live HTTP requests: a clean one (forwarded) and one carrying a subject's
+email (blocked with HTTP 451, never reaches the destination). The ledger
+records both decisions, with personal data masked so the audit log itself
+never leaks.
+
+Honest scope: this is a laptop-scale reference implementation of the
+egress-control pattern. It inspects plain HTTP bodies. It does NOT do TLS
+interception or production-grade throughput. The value is the working
+pattern: real payload inspection + policy + tamper-evident decision log.

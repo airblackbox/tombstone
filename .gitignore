@@ -1,0 +1,13 @@
+# Tombstone runtime data (NEVER commit, may contain keys/ciphertext)
+tombstone_data/
+*.key
+*.blob
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
