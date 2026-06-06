@@ -106,3 +106,39 @@ def test_hoarded_wrapped_key_useless_after_master_erase(tmp_path):
                     assert False, "hoarded wrapped key should not decrypt data"
                 except Exception:
                     pass
+
+
+def test_merkle_inclusion_and_forgery(tmp_path):
+    """A real entry proves inclusion; a forged entry does not."""
+    from tombstone import Ledger
+    v = Vault(str(tmp_path / "data"))
+    for name in ["alice", "bob", "carol", "dave"]:
+        v.record(name, f"{name}@example.com", location="users")
+    entries = v.ledger._entries()
+    bundle = v.ledger.prove_inclusion(2)
+    assert Ledger.check_inclusion(bundle) is True
+    forged = dict(bundle); forged["entry_hash"] = "00" * 32
+    assert Ledger.check_inclusion(forged) is False
+
+
+def test_merkle_consistency_detects_rewrite(tmp_path):
+    """Consistency proof holds for growth, fails if history is rewritten.
+
+    Note: the Merkle layer commits to each entry's entry_hash. Tampering with
+    other fields is caught by the hash-chain verify() instead (defense in
+    depth). To test the Merkle layer specifically, we rewrite the entry_hash,
+    which is what an attacker forging the tree structure would have to do.
+    """
+    v = Vault(str(tmp_path / "data"))
+    for name in ["alice", "bob", "carol"]:
+        v.record(name, f"{name}@example.com", location="users")
+    cons = v.ledger.prove_consistency(2)
+    assert v.ledger.check_consistency(cons) is True
+    # Rewrite an early entry's HASH on disk (the field Merkle commits to).
+    import json
+    from pathlib import Path
+    path = v.ledger.path
+    lines = Path(path).read_text().splitlines()
+    e = json.loads(lines[0]); e["entry_hash"] = "ff" * 32; lines[0] = json.dumps(e)
+    Path(path).write_text("\n".join(lines) + "\n")
+    assert v.ledger.check_consistency(cons) is False

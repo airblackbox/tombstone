@@ -166,3 +166,64 @@ class Ledger:
     def events_for(self, subject_id: str) -> list[dict]:
         """All ledger entries about one subject (useful for proving erasure)."""
         return [e for e in self._entries() if e["subject_id"] == subject_id]
+
+    # ---- Merkle proofs (v0.6): inclusion and consistency ----
+
+    def _leaves(self) -> list[bytes]:
+        """Each entry's hash, as a Merkle leaf, in log order."""
+        from .merkle import hash_leaf
+        return [hash_leaf(e["entry_hash"].encode()) for e in self._entries()]
+
+    def merkle_root(self) -> str:
+        """The current Merkle root over all entries, as hex."""
+        from .merkle import merkle_root
+        return merkle_root(self._leaves()).hex()
+
+    def prove_inclusion(self, index: int) -> dict:
+        """
+        Prove the entry at `index` is in the log, with a compact (~log2 n)
+        audit path. Returns everything a verifier needs, NOT the whole log.
+        """
+        from .merkle import inclusion_proof
+        leaves = self._leaves()
+        entries = self._entries()
+        proof = inclusion_proof(leaves, index)
+        return {
+            "index": index,
+            "size": len(leaves),
+            "entry_hash": entries[index]["entry_hash"],
+            "proof": [h.hex() for h in proof],
+            "root": self.merkle_root(),
+        }
+
+    @staticmethod
+    def check_inclusion(bundle: dict) -> bool:
+        """
+        Verify an inclusion bundle from prove_inclusion() WITHOUT the log.
+        Anyone holding only the root can confirm a single entry is included.
+        """
+        from .merkle import hash_leaf, verify_inclusion
+        leaf = hash_leaf(bundle["entry_hash"].encode())
+        proof = [bytes.fromhex(h) for h in bundle["proof"]]
+        root = bytes.fromhex(bundle["root"])
+        return verify_inclusion(leaf, bundle["index"], bundle["size"], proof, root)
+
+    def prove_consistency(self, old_size: int) -> dict:
+        """Prove the log only grew since it had `old_size` entries."""
+        from .merkle import consistency_proof, merkle_root
+        leaves = self._leaves()
+        old_root = merkle_root(leaves[:old_size]).hex()
+        proof = consistency_proof(leaves, old_size)
+        return {
+            "old_size": old_size,
+            "old_root": old_root,
+            "proof": [h.hex() for h in proof],
+        }
+
+    def check_consistency(self, bundle: dict) -> bool:
+        """Verify a consistency bundle against the current log."""
+        from .merkle import verify_consistency
+        leaves = self._leaves()
+        old_root = bytes.fromhex(bundle["old_root"])
+        proof = [bytes.fromhex(h) for h in bundle["proof"]]
+        return verify_consistency(old_root, bundle["old_size"], leaves, proof)

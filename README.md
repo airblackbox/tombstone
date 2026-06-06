@@ -152,3 +152,26 @@ belongs in a KMS/HSM that performs and attests its own destruction, so erasure
 is provable to a third party and disk access alone cannot recover it. The
 wrap/unwrap interface is exactly what a KMS slots into; that integration is the
 next deployment-hardening step.
+
+## Phase 6: Merkle-tree proofs (v0.6)
+
+The hash chain proves the whole log is intact, but proving a single entry
+meant handing over the whole log. A Merkle tree (RFC 6962 hashing, the
+Certificate Transparency scheme) adds two things:
+
+- Inclusion proof: prove "entry X is in the log" with about log2(n) hashes,
+  without revealing other entries. Prove an erasure is recorded without
+  dumping everyone else's events.
+- Consistency proof: prove the log only ever grew, never rewrote history.
+
+```
+python demo/demo_merkle.py   # prove one erasure privately; reject a forgery
+```
+
+Tombstone now has layered integrity: the hash chain catches content tampering,
+the authenticated head catches truncation, and the Merkle tree gives efficient
+inclusion and consistency proofs. 10 security tests pass (pytest tests/).
+
+Honest limit: this consistency proof returns the two roots and recomputes,
+which is correct and demonstrable but not the minimal-subset RFC 6962 proof.
+The minimal-hash optimization is a later refinement.
