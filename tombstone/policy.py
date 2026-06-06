@@ -72,22 +72,31 @@ class Policy:
 
         Block if the destination is restricted AND the payload contains either
         a registered protected value or a recognizable PII pattern.
+
+        We check BOTH the raw payload and a normalized copy (whitespace and
+        common separators stripped) so simple obfuscation like "a l i c e@
+        e x a m p l e.com" or "alice [at] example [dot] com" does not slip
+        past. This raises the bar; content inspection is always an arms race,
+        but trivial spacing tricks should not work.
         """
         if not self._dest_is_blocked(dest):
             return Decision(True, f"destination '{dest}' is not restricted")
 
+        normalized = _normalize(payload)
         matched: list[str] = []
 
-        # 1. Exact registered protected values (strongest signal).
+        # 1. Exact registered protected values, checked raw AND normalized.
         for subject_id, values in self._protected.items():
             for v in values:
-                if v and v in payload:
+                if not v:
+                    continue
+                if v in payload or _normalize(v) in normalized:
                     matched.append(f"{subject_id}:{_mask(v)}")
 
-        # 2. Generic PII patterns (defense in depth).
+        # 2. Generic PII patterns, checked raw AND normalized.
         if self.block_pii_patterns:
             for kind, pat in PII_PATTERNS.items():
-                if pat.search(payload):
+                if pat.search(payload) or pat.search(normalized):
                     matched.append(f"pii:{kind}")
 
         if matched:
@@ -97,6 +106,23 @@ class Policy:
                 matched=sorted(set(matched)),
             )
         return Decision(True, f"no protected data found in payload to '{dest}'")
+
+
+def _normalize(text: str) -> str:
+    """
+    Collapse common obfuscation so trivial evasion fails:
+      - remove whitespace (defeats "a l i c e@...")
+      - map "[at]"/"(at)"/" at " -> "@" and "[dot]"/" dot " -> "."
+    Lowercased. This is a bar-raiser, not a guarantee; determined obfuscation
+    (encoding, encryption, splitting across requests) still requires deeper
+    inspection, which is honestly out of scope for a regex layer.
+    """
+    import re as _re
+    t = text.lower()
+    t = _re.sub(r"\[?\(?\s*at\s*\)?\]?", "@", t)
+    t = _re.sub(r"\[?\(?\s*dot\s*\)?\]?", ".", t)
+    t = _re.sub(r"\s+", "", t)
+    return t
 
 
 def _mask(value: str) -> str:

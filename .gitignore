@@ -11,3 +11,10 @@ __pycache__/
 venv/
 build/
 dist/
+
+# Ledger integrity secrets (NEVER commit the head-signing key)
+*.headkey
+*.head
+
+# pytest
+.pytest_cache/

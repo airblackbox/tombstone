@@ -94,3 +94,38 @@ Honest scope: this is a laptop-scale reference implementation of the
 egress-control pattern. It inspects plain HTTP bodies. It does NOT do TLS
 interception or production-grade throughput. The value is the working
 pattern: real payload inspection + policy + tamper-evident decision log.
+
+## Phase 5: hardening, attack yourself (v0.4)
+
+A security tool is only as good as the attacks it survives. Tombstone ships an
+adversarial test suite that tries to defeat its own guarantees:
+
+```
+python attack.py          # readable attack report
+pytest tests/             # the same attacks as assertions
+```
+
+Attacks and current status:
+
+- Forge a past entry (alter contents, keep hash): DEFENDED (hash mismatch).
+- Reorder entries: DEFENDED (broken prev_hash link).
+- Truncate the log (delete recent entries to hide them): DEFENDED. The ledger
+  keeps an HMAC-authenticated head recording chain length and tip; truncation
+  makes the log disagree with the head, and the head cannot be forged without
+  the secret key.
+- Recover data after crypto-shred: DEFENDED (vault read fails; no plaintext on
+  disk, only ciphertext for a destroyed key).
+- Sneak obfuscated PII past the proxy (spacing, [at]/[dot] tricks): DEFENDED
+  via payload normalization.
+
+Honest limits (the next hardening targets, not yet done):
+- The head-signing secret currently lives next to the ledger. Truly hardened,
+  it belongs in a separate KMS/HSM so an attacker with full disk access still
+  cannot forge the head.
+- Secure key deletion on SSDs is hard (wear-leveling). The robust answer is
+  envelope encryption: wrap subject keys under a KMS master key whose
+  destruction is attestable, so erasure never depends on physically scrubbing
+  bytes. Planned.
+- Content inspection is an arms race. Normalization defeats trivial evasion;
+  encoding, encryption, or splitting across requests still requires deeper
+  inspection.

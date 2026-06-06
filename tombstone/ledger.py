@@ -38,6 +38,18 @@ class Ledger:
         self.path = Path(path)
         if not self.path.exists():
             self.path.write_text("")
+        # Tamper-proof HEAD: defends against truncation. The head records the
+        # chain's length and tip hash, authenticated with HMAC under a secret
+        # key. An attacker who chops entries off the log cannot produce a
+        # matching head without the secret, so verify() catches the missing
+        # entries. The secret lives beside the ledger; in production it would
+        # live in a KMS/HSM, separate from the log itself.
+        self.head_path = Path(str(self.path) + ".head")
+        self._secret_path = Path(str(self.path) + ".headkey")
+        if not self._secret_path.exists():
+            import secrets as _secrets
+            self._secret_path.write_bytes(_secrets.token_bytes(32))
+        self._head_secret = self._secret_path.read_bytes()
 
     def _entries(self) -> list[dict]:
         """Read all entries from disk, in order."""
@@ -50,6 +62,25 @@ class Ledger:
         if not entries:
             return self.GENESIS
         return entries[-1]["entry_hash"]
+
+    def _sign_head(self, length: int, tip: str) -> str:
+        """HMAC over (length, tip). Only someone with the secret can forge it."""
+        import hmac
+        msg = f"{length}:{tip}".encode()
+        return hmac.new(self._head_secret, msg, hashlib.sha256).hexdigest()
+
+    def _write_head(self, length: int, tip: str) -> None:
+        """Persist the authenticated head: how many entries and the tip hash."""
+        head = {"length": length, "tip": tip, "mac": self._sign_head(length, tip)}
+        self.head_path.write_text(json.dumps(head))
+
+    def _read_head(self) -> dict | None:
+        if not self.head_path.exists():
+            return None
+        try:
+            return json.loads(self.head_path.read_text())
+        except (ValueError, OSError):
+            return None
 
     def append(self, subject_id: str, event_type: str, data_commitment: str) -> dict:
         """
@@ -81,6 +112,8 @@ class Ledger:
         # Append as one JSON line.
         with open(self.path, "a") as f:
             f.write(json.dumps(entry) + "\n")
+        # Update the authenticated head so truncation becomes detectable.
+        self._write_head(entry["index"] + 1, entry["entry_hash"])
         return entry
 
     def verify(self) -> tuple[bool, str]:
@@ -109,6 +142,25 @@ class Ledger:
             if _hash(body_bytes) != entry["entry_hash"]:
                 return False, f"entry {i}: contents were altered (hash mismatch)"
             prev_hash = entry["entry_hash"]
+
+        # Truncation defense: compare the actual log against the authenticated
+        # head. If entries were chopped off, the recorded length/tip will not
+        # match, and the attacker cannot have forged a new head without the
+        # secret key.
+        head = self._read_head()
+        if head is not None:
+            expected_mac = self._sign_head(head.get("length"), head.get("tip"))
+            if head.get("mac") != expected_mac:
+                return False, "head record is forged or corrupted (bad MAC)"
+            if head.get("length") != len(entries):
+                return False, (
+                    f"truncation detected: head says {head.get('length')} entries, "
+                    f"log has {len(entries)}"
+                )
+            actual_tip = entries[-1]["entry_hash"] if entries else self.GENESIS
+            if head.get("tip") != actual_tip:
+                return False, "tip mismatch: log tip does not match authenticated head"
+
         return True, f"chain intact ({len(entries)} entries verified)"
 
     def events_for(self, subject_id: str) -> list[dict]:
