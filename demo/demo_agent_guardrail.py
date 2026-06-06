@@ -13,15 +13,27 @@ Run:  PYTHONPATH=. python3 demo/demo_agent_guardrail.py
 import os
 import shutil
 import tempfile
+import time
 
 from tombstone.ledger import Ledger
 from tombstone.action_guard import ActionGuard
+
+
+# Small deliberate pauses so the story is watchable when recorded.
+# Set TOMBSTONE_FAST=1 to disable them (instant run for tests / repeat use).
+_FAST = os.environ.get("TOMBSTONE_FAST") == "1"
+
+
+def pause(seconds: float = 0.7) -> None:
+    if not _FAST:
+        time.sleep(seconds)
 
 
 def banner(title: str) -> None:
     print("\n" + "=" * 64)
     print(title)
     print("=" * 64)
+    pause(0.4)
 
 
 def main() -> None:
@@ -38,8 +50,9 @@ def main() -> None:
     guard.protect_path(docs)  # must never be destroyed without human sign-off
 
     banner("THE SETUP")
-    print(f"Agent workspace : {workdir}")
-    print(f"Protected files : {sorted(os.listdir(docs))}")
+    print("Workspace : a temp folder holding 3 irreplaceable files")
+    print(f"Protected : {sorted(os.listdir(docs))}")
+    pause()
 
     banner("AGENT 1 GOES TO WORK")
 
@@ -50,15 +63,18 @@ def main() -> None:
     if d.allowed:
         with open(target) as fh:
             fh.read()
+    pause(1.0)
 
     # Beat 2: the catastrophic action. Agent decides to "clean up" the folder.
-    print(f"\n[2] DELETE documents/     -> ", end="")
+    print("[2] DELETE documents/     -> ", end="", flush=True)
+    pause(1.1)
     d = guard.check_action("delete", docs)
     if d.allowed:
         shutil.rmtree(docs)
         print("ALLOWED. Files destroyed. (this is the nightmare)")
     else:
         print(f"BLOCKED before it ran.\n    Reason: {d.reason}")
+    pause(1.0)
 
     banner("AGENT 2 GETS STUCK IN A LOOP")
     # Same failing call over and over, the $4,200-overnight-bill pattern.
@@ -69,17 +85,21 @@ def main() -> None:
         if not d.allowed:
             print(f"    Reason: {d.reason}")
             break
+        pause(0.3)
+    pause(0.9)
 
     banner("THE PROOF: your files are still here")
     alive = os.path.exists(docs) and sorted(os.listdir(docs))
     print(f"Documents folder intact : {bool(alive)}")
     print(f"Files still present     : {alive if alive else 'GONE'}")
+    pause()
 
     banner("THE RECEIPT: tamper-evident ledger")
     for e in ledger._entries():
         print(f"  {e['event_type']:15} commit={e['data_commitment'][:12]}...  idx={e['index']}")
     ok, msg = ledger.verify()
     print(f"\nLedger integrity : {'VALID' if ok else 'BROKEN'}  ({msg})")
+    pause()
 
     banner("WHAT JUST HAPPENED")
     print("Two agents tried to do real damage: one deleting irreplaceable files,")

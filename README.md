@@ -1,15 +1,49 @@
 # Tombstone
 
-Provable, crypto-shredded erasure on a tamper-evident ledger.
+**Stop your AI agent before it does damage. Get a signed receipt of what it tried.**
 
-You should not have to choose between a permanent audit trail and a person's
-right to be deleted. Tombstone gives you both. The audit log is append-only and
-tamper-evident. Erasing a person destroys their encryption key, which makes all
-of their data unrecoverable everywhere, even in copies you cannot see, without
-ever altering the log. The data is gone. The proof that it existed, and was
-deleted, remains. That is what a tombstone is.
+![Tombstone blocks an agent from deleting real files, then proves it](demo.gif)
 
-Runs locally. Your data never leaves your environment.
+Tombstone is an open-source control plane for AI agents. It sits in front of the
+actions an agent takes and intercepts the dangerous ones before they run:
+deleting your files, dropping a table, spinning in a runaway loop that burns
+money. Every decision, allowed or blocked, is sealed into a tamper-evident
+ledger, so you always have proof of exactly what your agent tried to do.
+
+Observability tools chart the disaster in a dashboard after it happens.
+Tombstone stops it first, then proves it.
+
+Runs locally. Framework-agnostic. Your data and your agents never leave your
+environment.
+
+## Try it in 10 seconds
+
+```
+git clone https://github.com/shotwellj/tombstone
+cd tombstone
+pip install cryptography
+PYTHONPATH=. python3 demo/demo_agent_guardrail.py
+```
+You will watch an agent get blocked from deleting real files, watch a runaway
+loop get killed at step 5, and see the signed receipt on a ledger that verifies.
+
+## What Tombstone does
+
+Two capabilities, one tamper-evident spine:
+
+1. **Action control.** Mark the actions that must never happen without sign-off
+   (destructive verbs on protected targets), set loop and step budgets, and
+   Tombstone blocks the bad action before it runs. Every decision is sealed to
+   the ledger. See `tombstone/action_guard.py` and the demo above.
+2. **Provable erasure.** Personal data is encrypted per subject; erasing someone
+   destroys their key (crypto-shredding), so their data is unrecoverable
+   everywhere, even in copies, while the append-only audit log stays intact. The
+   data is gone; the proof it existed and was deleted remains. That is what a
+   tombstone is.
+
+The sections below document the cryptographic spine that powers both: a
+hash-chained, Merkle-proofed, truncation-resistant ledger, envelope encryption,
+and a real flow-control proxy.
 
 ## How it works
 
@@ -35,11 +69,13 @@ python demo/demo.py
 
 ## Status
 
-v0.1: the erasure core. This is the hard part, and it works.
+Working today: action control (block destructive actions, loops, and runaway
+step budgets), provable crypto-shredded erasure, lineage tracking, a flow-control
+proxy, envelope encryption, and a hash-chained plus Merkle-proofed tamper-evident
+ledger. 10 security tests pass (pytest tests/).
 
-Roadmap (not built yet): lineage tracking across systems, a data-flow control
-gate, and an AI layer that detects and proposes remediation (with destructive
-actions gated by human approval).
+Next: a cost-ceiling policy (kill a run before the token bill climbs), and moving
+the ledger's signing secret into a KMS/HSM so disk access alone cannot forge it.
 
 ## Install
 
