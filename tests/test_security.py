@@ -142,3 +142,68 @@ def test_merkle_consistency_detects_rewrite(tmp_path):
     e = json.loads(lines[0]); e["entry_hash"] = "ff" * 32; lines[0] = json.dumps(e)
     Path(path).write_text("\n".join(lines) + "\n")
     assert v.ledger.check_consistency(cons) is False
+
+
+# ---------------------------------------------------------------------------
+# Action enforcement (ActionGuard): the guard must STOP a real action, not just
+# advise against it. A guarded destructive call must raise and never execute.
+# ---------------------------------------------------------------------------
+
+def test_guarded_delete_is_enforced_not_advisory(tmp_path):
+    import shutil
+    from tombstone.action_guard import ActionGuard, ActionBlocked
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "keep.txt").write_text("irreplaceable")
+
+    guard = ActionGuard()
+    guard.protect_path(str(docs))
+
+    ran = {"deleted": False}
+
+    @guard.guarded("delete")
+    def delete_path(path):
+        ran["deleted"] = True          # proves whether the body executed
+        shutil.rmtree(path)
+
+    with pytest.raises(ActionBlocked):
+        delete_path(str(docs))
+
+    assert ran["deleted"] is False
+    assert docs.exists()
+    assert (docs / "keep.txt").exists()
+
+
+def test_guarded_safe_action_runs_and_returns(tmp_path):
+    from tombstone.action_guard import ActionGuard
+
+    f = tmp_path / "note.txt"
+    f.write_text("hello")
+
+    guard = ActionGuard()
+    guard.protect_path(str(tmp_path))  # 'read' is not destructive, so allowed
+
+    @guard.guarded("read")
+    def read_file(path):
+        with open(path) as fh:
+            return fh.read()
+
+    assert read_file(str(f)) == "hello"
+
+
+def test_runaway_loop_is_stopped(tmp_path):
+    from tombstone.action_guard import ActionGuard, ActionBlocked
+
+    guard = ActionGuard(loop_threshold=5)
+    calls = {"n": 0}
+
+    @guard.guarded("call")
+    def hit_api(url):
+        calls["n"] += 1
+
+    with pytest.raises(ActionBlocked):
+        for _ in range(10):
+            hit_api("https://api.example.com/x")
+
+    assert calls["n"] == 4   # 4 ran; the 5th identical call was blocked before running

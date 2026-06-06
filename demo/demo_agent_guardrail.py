@@ -1,13 +1,14 @@
 """
-demo_agent_guardrail.py  -  the hero demo.
+demo_agent_guardrail.py  -  the hero demo (enforced).
 
-An autonomous agent is doing real work on real files. One of its steps is
-catastrophic: it tries to delete the user's documents. Tombstone intercepts
-the action BEFORE it runs, blocks it, and seals a tamper-evident receipt.
-
-Then a second agent gets stuck in a runaway loop, and Tombstone stops that too.
+An autonomous agent is given TOOLS to do its work. The dangerous tools are
+wrapped by Tombstone. When the agent tries to misuse one (delete the user's
+documents, or spin in a runaway loop), the guard raises and the underlying
+action never runs. The agent does not ask permission; it is stopped by force.
+Every attempt is sealed to a tamper-evident ledger.
 
 Run:  PYTHONPATH=. python3 demo/demo_agent_guardrail.py
+      TOMBSTONE_FAST=1 ...  to skip the pacing pauses
 """
 
 import os
@@ -16,15 +17,13 @@ import tempfile
 import time
 
 from tombstone.ledger import Ledger
-from tombstone.action_guard import ActionGuard
+from tombstone.action_guard import ActionGuard, ActionBlocked
 
 
-# Small deliberate pauses so the story is watchable when recorded.
-# Set TOMBSTONE_FAST=1 to disable them (instant run for tests / repeat use).
 _FAST = os.environ.get("TOMBSTONE_FAST") == "1"
 
 
-def pause(seconds: float = 0.7) -> None:
+def pause(seconds: float = 1.0) -> None:
     if not _FAST:
         time.sleep(seconds)
 
@@ -33,11 +32,10 @@ def banner(title: str) -> None:
     print("\n" + "=" * 64)
     print(title)
     print("=" * 64)
-    pause(0.4)
+    pause(0.5)
 
 
 def main() -> None:
-    # A real workspace with real files, so the danger is real, not pretend.
     workdir = tempfile.mkdtemp(prefix="agent_workspace_")
     docs = os.path.join(workdir, "documents")
     os.makedirs(docs)
@@ -47,66 +45,76 @@ def main() -> None:
 
     ledger = Ledger(os.path.join(workdir, "agent_ledger.jsonl"))
     guard = ActionGuard(ledger=ledger, step_budget=50, loop_threshold=5)
-    guard.protect_path(docs)  # must never be destroyed without human sign-off
+    guard.protect_path(docs)
+
+    @guard.guarded("read")
+    def read_file(path):
+        with open(path) as fh:
+            return fh.read()
+
+    @guard.guarded("delete")
+    def delete_path(path):
+        shutil.rmtree(path)
+        return "deleted"
+
+    @guard.guarded("call")
+    def call_search_api(url):
+        return "results"
 
     banner("THE SETUP")
     print("Workspace : a temp folder holding 3 irreplaceable files")
     print(f"Protected : {sorted(os.listdir(docs))}")
-    pause()
+    print("The agent is given guarded tools: read_file, delete_path, call_search_api")
+    pause(1.2)
 
     banner("AGENT 1 GOES TO WORK")
 
-    # Beat 1: a normal, safe action sails straight through.
-    target = os.path.join(docs, "novel_draft.md")
-    d = guard.check_action("read", target)
-    print(f"[1] READ novel_draft.md   -> {'ALLOWED' if d.allowed else 'BLOCKED'}  ({d.reason})")
-    if d.allowed:
-        with open(target) as fh:
-            fh.read()
-    pause(1.0)
+    read_file(os.path.join(docs, "novel_draft.md"))
+    print("[1] read_file(novel_draft.md)   -> ALLOWED, ran normally")
+    pause(1.3)
 
-    # Beat 2: the catastrophic action. Agent decides to "clean up" the folder.
-    print("[2] DELETE documents/     -> ", end="", flush=True)
-    pause(1.1)
-    d = guard.check_action("delete", docs)
-    if d.allowed:
-        shutil.rmtree(docs)
-        print("ALLOWED. Files destroyed. (this is the nightmare)")
-    else:
-        print(f"BLOCKED before it ran.\n    Reason: {d.reason}")
-    pause(1.0)
+    print("[2] delete_path(documents/)     -> ", end="", flush=True)
+    pause(1.8)
+    try:
+        delete_path(docs)
+        print("ran. Files destroyed. (this is the nightmare)")
+    except ActionBlocked as exc:
+        print("STOPPED BY FORCE before rmtree ran.")
+        print(f"    {exc}")
+    pause(1.3)
 
     banner("AGENT 2 GETS STUCK IN A LOOP")
-    # Same failing call over and over, the $4,200-overnight-bill pattern.
     for i in range(1, 8):
-        d = guard.check_action("call", "https://api.example.com/search")
-        state = "ALLOWED" if d.allowed else "BLOCKED"
-        print(f"[loop step {i}] call search API -> {state}")
-        if not d.allowed:
-            print(f"    Reason: {d.reason}")
+        try:
+            call_search_api("https://api.example.com/search")
+            print(f"[loop step {i}] call_search_api()  -> ran")
+        except ActionBlocked as exc:
+            print(f"[loop step {i}] call_search_api()  -> STOPPED BY FORCE")
+            print(f"    {exc}")
             break
-        pause(0.3)
-    pause(0.9)
+        pause(0.5)
+    pause(1.1)
 
     banner("THE PROOF: your files are still here")
     alive = os.path.exists(docs) and sorted(os.listdir(docs))
     print(f"Documents folder intact : {bool(alive)}")
     print(f"Files still present     : {alive if alive else 'GONE'}")
-    pause()
+    pause(1.0)
 
     banner("THE RECEIPT: tamper-evident ledger")
     for e in ledger._entries():
         print(f"  {e['event_type']:15} commit={e['data_commitment'][:12]}...  idx={e['index']}")
     ok, msg = ledger.verify()
     print(f"\nLedger integrity : {'VALID' if ok else 'BROKEN'}  ({msg})")
-    pause()
+    pause(1.0)
 
     banner("WHAT JUST HAPPENED")
-    print("Two agents tried to do real damage: one deleting irreplaceable files,")
-    print("one burning money in a loop. Tombstone stopped both BEFORE they ran and")
-    print("sealed a signed receipt of every attempt. Observe-only tools would have")
-    print("charted the disaster in a dashboard, after the files were already gone.")
-    print(f"\n(workspace left at {workdir} so you can inspect it)")
+    print("The agent was handed guarded tools and tried to misuse them: deleting")
+    print("irreplaceable files, then looping forever. Tombstone raised and the real")
+    print("actions never ran. It did not ask permission; it enforced. Every attempt")
+    print("is sealed on a ledger that verifies. Observe-only tools would have charted")
+    print("the disaster after the files were already gone.")
+    print(f"\n(workspace left at {workdir})")
 
 
 if __name__ == "__main__":

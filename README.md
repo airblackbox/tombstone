@@ -31,10 +31,12 @@ loop get killed at step 5, and see the signed receipt on a ledger that verifies.
 
 Two capabilities, one tamper-evident spine:
 
-1. **Action control.** Mark the actions that must never happen without sign-off
-   (destructive verbs on protected targets), set loop and step budgets, and
-   Tombstone blocks the bad action before it runs. Every decision is sealed to
-   the ledger. See `tombstone/action_guard.py` and the demo above.
+1. **Action control (enforced).** Wrap an agent's risky tools with the guard.
+   When the agent calls a guarded tool to do something forbidden (a destructive
+   action on a protected target, or a runaway loop), the guard raises and the
+   real action never runs. It does not ask permission, it enforces. Hand the
+   agent only guarded tools and bypassing is not an option. Every decision is
+   sealed to the ledger. See `tombstone/action_guard.py` and the demo above.
 2. **Provable erasure.** Personal data is encrypted per subject; erasing someone
    destroys their key (crypto-shredding), so their data is unrecoverable
    everywhere, even in copies, while the append-only audit log stays intact. The
@@ -72,7 +74,7 @@ python demo/demo.py
 Working today: action control (block destructive actions, loops, and runaway
 step budgets), provable crypto-shredded erasure, lineage tracking, a flow-control
 proxy, envelope encryption, and a hash-chained plus Merkle-proofed tamper-evident
-ledger. 10 security tests pass (pytest tests/).
+ledger. 13 security tests pass (pytest tests/).
 
 Next: a cost-ceiling policy (kill a run before the token bill climbs), and moving
 the ledger's signing secret into a KMS/HSM so disk access alone cannot forge it.
