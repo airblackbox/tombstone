@@ -207,3 +207,41 @@ def test_runaway_loop_is_stopped(tmp_path):
             hit_api("https://api.example.com/x")
 
     assert calls["n"] == 4   # 4 ran; the 5th identical call was blocked before running
+
+
+# ---------------------------------------------------------------------------
+# LangChain adapter: a guarded tool must block a forbidden call when invoked
+# through LangChain's own tool machinery (.invoke), not just when called raw.
+# Skips automatically if langchain-core is not installed.
+# ---------------------------------------------------------------------------
+
+def test_langchain_guarded_tool_blocks_through_invoke(tmp_path):
+    pytest.importorskip("langchain_core")
+    import shutil
+    from tombstone.action_guard import ActionGuard
+    from tombstone.integrations.langchain import guarded_tool
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "keep.txt").write_text("irreplaceable")
+
+    guard = ActionGuard()
+    guard.protect_path(str(docs))
+
+    def delete_path(path: str) -> str:
+        """Delete a directory at the given path."""
+        shutil.rmtree(path)
+        return f"deleted {path}"
+
+    tool = guarded_tool(guard, "delete", delete_path, on_block="return")
+
+    result = tool.invoke({"path": str(docs)})
+    assert "BLOCKED by Tombstone" in result
+    assert docs.exists()
+    assert (docs / "keep.txt").exists()
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    out = tool.invoke({"path": str(scratch)})
+    assert "deleted" in out
+    assert not scratch.exists()
