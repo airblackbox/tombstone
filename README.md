@@ -19,7 +19,7 @@ environment.
 ## Try it in 10 seconds
 
 ```
-git clone https://github.com/shotwellj/tombstone
+git clone https://github.com/airblackbox/tombstone
 cd tombstone
 pip install cryptography
 PYTHONPATH=. python3 demo/demo_agent_guardrail.py
