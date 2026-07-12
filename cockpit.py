@@ -104,7 +104,7 @@ def run_demo():
                     "status": "ran", "text": "Files destroyed. This should never happen."})
     except ActionBlocked as exc:
         yield _sse({"type": "step", "n": "2", "action": "delete", "target": "documents/",
-                    "status": "blocked", "text": str(exc)})
+                    "status": "blocked", "text": exc.decision.reason})
     for f in drain():
         yield f
     time.sleep(0.5)
@@ -116,7 +116,7 @@ def run_demo():
                         "status": "ran", "text": f"call_search_api() ran (step {i})"})
         except ActionBlocked as exc:
             yield _sse({"type": "step", "n": f"loop {i}", "action": "call", "target": "search_api",
-                        "status": "killed", "text": str(exc)})
+                        "status": "killed", "text": exc.decision.reason})
             for f in drain():
                 yield f
             break
