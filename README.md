@@ -1,234 +1,145 @@
 # Tombstone
 
-**Stop your AI agents from looping, running away, or wiping your data. In two lines. With a receipt.**
+**Prove a person's data is gone from your AI pipeline. Every copy. With a receipt an auditor can check without trusting you.**
+
+Personal data does not stay in one table. It gets copied into a marketing export, embedded into a vector store, rolled into a training set, cached by an agent. When that person says "delete me", you have to cover all of it, and you have to be able to prove you did.
+
+Tombstone is a small Python library that does three things:
+
+- **Erases everywhere at once.** Each person's data is encrypted under their own key before it touches disk, in every location. Erasure destroys the key. Every copy becomes permanent noise in the same instant, including copies you cannot reach.
+- **Proves it on a ledger nobody can quietly rewrite.** Every store, copy, decision and erasure is one entry in a hash-chained, Merkle-tree ledger. The ledger's root can be anchored in [Sigstore Rekor](https://rekor.sigstore.dev), a public append-only log, so rewriting history would mean rewriting a log you don't control.
+- **Guards the agents that touch the data.** An MCP proxy or a two-line wrapper sits between your AI agents and your tools. It blocks destructive calls on protected paths, blocks tool arguments that carry a protected person's data, kills runaway loops, and records every decision to the same ledger.
+
+Runs locally. One dependency (`cryptography`). Apache 2.0.
+
+## Try it in 60 seconds
+
+```bash
+git clone https://github.com/airblackbox/tombstone
+cd tombstone
+pip install .
+python demo/demo_certificate.py
+```
+
+You will watch one person's data spread across four locations, get erased with a single key destruction, receive an erasure certificate that contains no personal data, and see that certificate catch a rewrite of history.
+
+Add `TOMBSTONE_REKOR=1` to anchor the certificate in Sigstore Rekor for real. The certificate then carries a log index anyone can look up.
+
+## The erasure certificate
+
+```python
+from tombstone import Vault, RekorAnchor
+
+vault = Vault("tombstone_data")
+ref = vault.record("jose-rios", "Jose Rios, jose@example.com", location="users_table")
+vault.store_at("jose-rios", "vector_store", "profile embedding source")   # a real encrypted copy
+vault.copy_to("jose-rios", "vector_store", "ml_training_set", kind="derive")
+
+vault.erase("jose-rios")                       # destroy the one key every copy shares
+
+cert = vault.erasure_certificate("jose-rios", anchor=RekorAnchor())
+ok, msg = vault.check_erasure_certificate(cert, RekorAnchor())
+```
+
+The certificate holds:
+
+- the proof bundle: key gone, data unreadable at every recorded location, ledger intact
+- a Merkle inclusion proof for the erase entry, checkable with `Ledger.check_inclusion()` and nothing else. You never have to hand over the rest of the log.
+- the anchor receipt: the ledger root at that moment, published to Rekor, with the log index
+
+No personal data appears in the certificate or the ledger. Only hash commitments.
+
+## Guard the agents
+
+### MCP proxy (no code changes)
+
+Put Tombstone in front of any MCP server. Works with Claude Code, Cursor, and any MCP host.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "python",
+      "args": [
+        "-m", "tombstone.mcp_proxy",
+        "--protect", "/Users/me/data",
+        "--protect-value", "jose@example.com",
+        "--ledger", "/Users/me/tombstone_ledger.jsonl",
+        "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/me/workspace"
+      ]
+    }
+  }
+}
+```
+
+Every `tools/call` is checked before it reaches the server:
+
+- a delete, drop, remove or overwrite on anything under a protected path is blocked
+- arguments containing a protected person's data (or, with `--block-pii`, anything that looks like an email, SSN or card number) are blocked
+- more than `--budget` calls in a session, or the same call repeated `--loop` times, is blocked
+
+The agent gets a normal tool result with `isError: true` and a plain-English reason. The decision is sealed to the ledger.
 
 ![Tombstone blocks an agent from deleting real files, then proves it](demo.gif)
 
-Tombstone is an open-source control plane for AI agents. It wraps the tools you
-hand an agent and intercepts the dangerous calls before they run: a runaway loop
-that burns your token budget, the same call repeated forever, a delete or drop or
-overwrite on data you marked protected. Every decision, allowed or blocked, is
-sealed into a tamper-evident ledger, so you always have proof of exactly what
-your agent tried to do.
-
-Observability tools chart the disaster in a dashboard after it happens.
-Tombstone stops it first, then proves it.
-
-Runs locally. Framework-agnostic. Your data and your agents never leave your
-environment.
-
-## Guard any agent in two lines
+### Two lines in Python
 
 ```python
 from tombstone.easy import Tombstone
 
-tb = Tombstone(protect=["./data"], budget=50)   # a ledger + guard, ready
-tools = tb.guard_all(tools)                       # wrap your tools
+tb = Tombstone(protect=["./data"], budget=50)
+tools = tb.guard_all(tools)      # plain functions or LangChain tools
 ```
 
-Hand `tools` to your agent the way you already do. That is the whole
-integration. It works with plain Python tool functions (CrewAI, AutoGen, a raw
-OpenAI or Anthropic tool loop) and with LangChain tools.
-
-Three independent stops from one wrapper:
-
-- **Runaway budget.** After `budget` tool calls, the next one is blocked. A cost
-  ceiling for an agent that keeps going forever.
-- **Loop detector.** The same call repeated in a row is blocked. Catches an agent
-  stuck repeating itself.
-- **Protected paths.** A delete, drop, or overwrite on anything under a protected
-  path is blocked before it runs.
-
-Check the ledger any time:
-
-```python
-ok, msg = tb.verify()   # (True, 'chain intact (N entries verified)')
+```bash
+PYTHONPATH=. python3 demo/demo_agent_guardrail.py   # scripted agent, blocked and killed
+pip install flask && python3 cockpit.py             # same thing in the browser, http://127.0.0.1:5001
 ```
-
-## Proof: two runaways, one wrapper
-
-The loop detector catches an agent repeating itself:
-round 1: calling the tool
-round 2: calling the tool
-round 3: calling the tool
-round 4: calling the tool
-round 5: calling the tool
-STOPPED at round 5: loop detected: 'call:keep going' repeated 5x in a row
-verify: (True, 'chain intact (5 entries verified)')
-
-The budget catches an agent that keeps doing new things forever:
-round 1: calling the tool
-round 2: calling the tool
-round 3: calling the tool
-round 4: calling the tool
-round 5: calling the tool
-round 6: calling the tool
-STOPPED at round 6: step budget exceeded (6 > 5): possible runaway
-verify: (True, 'chain intact (6 entries verified)')
-
-Same two lines of setup. One catches repetition, the other catches endless
-novelty. Most agent guardrail tools give you one, not both.
-
-## Try it in 30 seconds
-git clone https://github.com/airblackbox/tombstone
-cd tombstone
-pip install cryptography
-PYTHONPATH=. python3 demo/demo_agent_guardrail.py
-
-You will watch an agent get blocked from deleting real files, a runaway loop get
-killed at step 5, and the signed receipt on a ledger that verifies.
-
-Watch two real agents spiral until the run is killed:
-PYTHONPATH=. python3 demo/runaway_agents.py
-
-Or watch the whole thing in the browser, a destructive block plus a runaway plus
-a live tamper test:
-pip install flask
-python3 cockpit.py     # then open http://127.0.0.1:5001
 
 ## How the proof works
 
-Every decision is one entry in an append-only, hash-chained ledger. Each entry
-commits to the previous one, so altering any past entry breaks verification, and
-an HMAC-authenticated head makes truncation detectable too. You do not have to
-trust Tombstone: run `ledger.verify()` yourself, or re-run any demo and check the
-ledger it wrote.
+Four layers, each catching something the one below cannot:
+
+1. **Hash chain.** Every entry commits to the previous one. Alter any entry and every later hash breaks.
+2. **Authenticated head.** An HMAC over the chain's length and tip. Chop entries off the end and the log disagrees with the head. Delete the head and verification refuses.
+3. **Merkle tree** (RFC 6962, the Certificate Transparency scheme). Inclusion proofs of about log2(n) hashes let you prove one entry is in the log without revealing the others. Consistency proofs show the log only ever grew.
+4. **External anchor.** Layers 1 to 3 are checked by whoever holds the ledger and its HMAC secret. An operator who rewrites history and re-signs passes all three. Anchoring publishes the Merkle root to Rekor, so a rewrite of anything before an anchor is caught by anyone holding the receipt.
+
+```python
+receipt = ledger.anchor(RekorAnchor())
+ok, msg = ledger.check_anchor(receipt, RekorAnchor())
+```
 
 ## Honest scope
 
-Enforcement covers actions taken through guarded tools. If you also hand the
-agent a raw, unguarded capability (a bare `os.remove`), it can bypass the guard.
-The rule is simple: give agents only guarded tools for anything risky. Tombstone
-is the wrapper you put around every dangerous tool, not a kernel hook.
+- **Erasure** is guaranteed for data that went through Tombstone, because it inherits the subject's key. A plaintext copy made by bypassing Tombstone entirely cannot be crypto-shredded by anyone. Lineage tracking is how you find those flows and route them through.
+- **The master key** that wraps subject keys lives in a local file. Hardened, it belongs in a KMS or HSM that attests its own destruction. The wrap/unwrap interface is where that slots in.
+- **Anchoring** proves the log was not rewritten after the anchor was published. Entries added since the last anchor are protected only by the local chain until the next one. Anchor as often as your evidence needs.
+- **The guard** covers actions taken through guarded tools or the proxy. Hand an agent a raw, unguarded capability and it can bypass. The rule is simple: everything risky goes through Tombstone.
+- **Payload inspection** is a regex layer. It defeats spacing and `[at]`/`[dot]` tricks, not encoding or encryption.
+
+## Everything else that is in the box
+
+Each has a runnable demo. Run from the repo root.
+
+| What | Demo | Notes |
+|---|---|---|
+| Five-step erasure thesis | `python demo/demo.py` | store, verify, read, erase, prove |
+| Lineage across systems | `python demo/demo_lineage.py` | `vault.lineage.graph()`, `locations()`, `trace()` |
+| Containment by key inheritance | `python demo/demo_containment.py` | `verify_erasure_coverage()` walks every copy |
+| Envelope encryption, erase everyone | `python demo/demo_envelope.py` | destroy the master key, every wrapped key dies |
+| Merkle inclusion and consistency | `python demo/demo_merkle.py` | prove one erasure privately, reject a forgery |
+| HTTP egress proxy | `python demo/demo_proxy.py` | blocks a person's data leaving over plain HTTP, 451 |
+| Attack your own ledger | `python attack.py` | forge, reorder, truncate, recover, evade: all defended |
+| Real LLM agents, stopped | `demo/demo_langchain_agent.py`, `demo/injection_attack.py`, `demo/runaway_agents.py` | need `ANTHROPIC_API_KEY` |
 
 ## Install
-pip install cryptography      # core
-pip install flask             # optional, for the browser cockpit
 
-Apache 2.0. 13 security tests pass (`pytest tests/`).
+```bash
+pip install .                     # core: cryptography only
+pip install ".[cockpit]"          # adds flask for the browser demo
+pip install ".[langchain]"        # adds langchain-core for guarded LangChain tools
+pytest tests/                     # 55 tests: attacks, guard, proxy, anchoring, certificates
+```
 
----
-
-## Beyond the agent guard: provable data erasure
-
-The same tamper-evident spine powers Tombstone's second capability: erasing a
-person's data so it is unrecoverable everywhere, even in copies, while the audit
-log proving it existed and was deleted stays intact. That is what a tombstone is.
-
-### How it works
-
-- Personal data is encrypted with a per-subject key (AES-256-GCM) before it
-  touches disk.
-- The ledger stores only a SHA-256 commitment to the ciphertext, never the data.
-  Each entry is hash-chained to the previous one, so altering any past entry
-  breaks verification.
-- Erasure = destroying the subject's key (crypto-shredding). The ciphertext
-  becomes permanent noise. The ledger stays intact.
-
-### The five-step proof
-python demo/demo.py
-
-1. Store a subject's data (encrypted; ledger holds only a hash).
-2. Verify the ledger is tamper-evident.
-3. Read the data back (proves it was really stored).
-4. Erase the subject (destroy the key).
-5. Prove erasure: data is unrecoverable AND the ledger still verifies.
-
-### Lineage and containment (v0.2)
-
-Erasing data in one place is the easy case. The real problem is that data gets
-copied and derived across systems, and you have to cover all of it.
-
-- Lineage: every copy or derivation is recorded as a flow on the ledger.
-  `vault.lineage.graph(subject)` shows where data went; `locations(subject)`
-  lists the full footprint; `trace(subject, start)` follows it downstream.
-- Containment: copies stored via `vault.store_at(...)` inherit the subject's one
-  key, so destroying that key crypto-shreds every copy at once.
-  `vault.verify_erasure_coverage(subject)` walks every location and proves each
-  copy is unreadable after erasure.
-python demo/demo_lineage.py      # trace the sprawl, erase across all of it
-python demo/demo_containment.py  # one key-shred kills every real copy
-
-Honest scope: containment is guaranteed for data that went through Tombstone (it
-inherits the key). A plaintext copy made by bypassing Tombstone entirely cannot
-be crypto-shredded by anyone; lineage tracking is how you catch those flows and
-route them through the system in the first place.
-
-### Flow-control proxy (v0.3)
-
-A real HTTP forward proxy that inspects request bodies and blocks personal-data
-leaks before they leave, recording every decision on the tamper-evident ledger.
-python demo/demo_proxy.py
-
-The demo starts a real destination server and a real proxy, then sends two live
-HTTP requests: a clean one (forwarded) and one carrying a subject's email
-(blocked with HTTP 451, never reaches the destination). The ledger records both
-decisions, with personal data masked so the audit log itself never leaks.
-
-Honest scope: this is a laptop-scale reference implementation of the
-egress-control pattern. It inspects plain HTTP bodies. It does NOT do TLS
-interception or production-grade throughput. The value is the working pattern:
-real payload inspection plus policy plus a tamper-evident decision log.
-
-### Hardening: attack yourself (v0.4)
-
-A security tool is only as good as the attacks it survives. Tombstone ships an
-adversarial test suite that tries to defeat its own guarantees:
-python attack.py          # readable attack report
-pytest tests/             # the same attacks as assertions
-
-Attacks and current status:
-
-- Forge a past entry (alter contents, keep hash): DEFENDED (hash mismatch).
-- Reorder entries: DEFENDED (broken prev_hash link).
-- Truncate the log (delete recent entries to hide them): DEFENDED. The ledger
-  keeps an HMAC-authenticated head recording chain length and tip; truncation
-  makes the log disagree with the head, and the head cannot be forged without
-  the secret key.
-- Recover data after crypto-shred: DEFENDED (vault read fails; no plaintext on
-  disk, only ciphertext for a destroyed key).
-- Sneak obfuscated PII past the proxy (spacing, [at]/[dot] tricks): DEFENDED via
-  payload normalization.
-
-Honest limits (the next hardening targets, not yet done):
-- The head-signing secret currently lives next to the ledger. Truly hardened, it
-  belongs in a separate KMS/HSM so an attacker with full disk access still
-  cannot forge the head.
-- Secure key deletion on SSDs is hard (wear-leveling). The robust answer is
-  envelope encryption: wrap subject keys under a KMS master key whose
-  destruction is attestable, so erasure never depends on physically scrubbing
-  bytes.
-- Content inspection is an arms race. Normalization defeats trivial evasion;
-  encoding, encryption, or splitting across requests still requires deeper
-  inspection.
-
-### Envelope encryption (v0.5)
-
-Erasure no longer trusts the disk. Every subject key is wrapped (encrypted) under
-a master key; only the wrapped form is ever written. Two erasure paths, neither
-depending on physically scrubbing bytes:
-
-- Erase one subject: destroy their wrapped key.
-- Crypto-erase everyone at once: destroy the master key. Every wrapped subject
-  key becomes permanently un-unwrappable, even copies an attacker hoarded.
-python demo/demo_envelope.py   # destroy the master, watch everyone die at once
-
-Honest limit: the master key still lives in a local file. Truly hardened, it
-belongs in a KMS/HSM that performs and attests its own destruction. The
-wrap/unwrap interface is exactly what a KMS slots into; that integration is the
-next deployment-hardening step.
-
-### Merkle-tree proofs (v0.6)
-
-The hash chain proves the whole log is intact; a Merkle tree (RFC 6962 hashing,
-the Certificate Transparency scheme) adds efficient single-entry proofs:
-
-- Inclusion proof: prove "entry X is in the log" with about log2(n) hashes,
-  without revealing other entries. Prove an erasure is recorded without dumping
-  everyone else's events.
-- Consistency proof: prove the log only ever grew, never rewrote history.
-python demo/demo_merkle.py   # prove one erasure privately; reject a forgery
-
-Layered integrity: the hash chain catches content tampering, the authenticated
-head catches truncation, and the Merkle tree gives efficient inclusion and
-consistency proofs.
+Python 3.10+. Apache 2.0.

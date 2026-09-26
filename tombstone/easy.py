@@ -20,6 +20,7 @@ CrewAI, AutoGen, a raw OpenAI or Anthropic tool loop) and with LangChain tools.
 
 import functools
 import os
+import re
 import tempfile
 from typing import Callable
 
@@ -47,9 +48,12 @@ def _infer_action(name: str) -> str:
     that verb so protected-path enforcement kicks in. Otherwise 'call', which
     still counts toward the runaway budget and the loop detector.
     """
-    low = (name or "").lower()
-    for verb in DESTRUCTIVE_ACTIONS:
-        if verb in low:
+    # Split the name into whole words so 'transform_data' or 'perform_search'
+    # is not mistaken for 'rm', and 'format_report' is not an 'rm' either.
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name or "")  # PurgeCache -> Purge_Cache
+    words = set(re.split(r"[^a-z0-9]+", spaced.lower()))
+    for verb in sorted(DESTRUCTIVE_ACTIONS):
+        if verb in words:
             return verb
     return "call"
 
@@ -74,9 +78,9 @@ class Tombstone:
 
         paths = [protect] if isinstance(protect, str) else list(protect)
         for p in paths:
-            # Register both the given form and the absolute form so a relative
-            # or absolute call argument both match the protected target.
-            self._guard.protect_path(p, os.path.abspath(p))
+            # The guard normalizes paths itself, so a relative or absolute call
+            # argument both match the protected target.
+            self._guard.protect_path(p)
 
     def guard(self, fn: Callable, action: str = None) -> Callable:
         """Wrap one tool (a plain function or a LangChain tool). Returns the

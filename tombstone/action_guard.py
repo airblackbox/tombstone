@@ -25,14 +25,30 @@ every dangerous tool, not a kernel hook.
 
 import functools
 import hashlib
+import os
 
 from .policy import Decision  # reuse the project's allow/block result type
 
 
 # Verbs treated as irreversible / high blast radius by default.
 DESTRUCTIVE_ACTIONS = {
-    "delete", "drop", "rm", "destroy", "overwrite", "truncate", "wipe", "purge",
+    "delete", "drop", "rm", "remove", "destroy", "overwrite", "truncate", "wipe", "purge",
 }
+
+
+def _normalize_path(target: str) -> str:
+    """Absolute, normalized form of a path so './data', 'data' and
+    '../repo/data' all compare equal. Non-path strings pass through the same
+    step; they simply become a path under the current directory."""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(target)))
+
+
+def _is_under(target: str, protected: str) -> bool:
+    """True if `target` IS `protected` or lives anywhere inside it."""
+    try:
+        return os.path.commonpath([target, protected]) == protected
+    except ValueError:  # different drives on Windows, or mixed abs/rel
+        return False
 
 
 class ActionBlocked(Exception):
@@ -54,14 +70,25 @@ class ActionGuard:
         self.ledger = ledger
         self.step_budget = step_budget
         self.loop_threshold = loop_threshold
+        # Raw strings as given (for exact, non-filesystem targets such as a
+        # table name) and their normalized absolute-path form.
+        self._protected_raw: set[str] = set()
         self._protected_paths: set[str] = set()
         self._steps = 0
         self._last_sig: str | None = None
         self._consecutive = 0
 
     def protect_path(self, *paths: str) -> None:
-        """Mark targets that must never be destroyed without human sign-off."""
-        self._protected_paths.update(p for p in paths if p)
+        """Mark targets that must never be destroyed without human sign-off.
+
+        A path protects itself and everything under it, whether the agent later
+        names it as './data', 'data', '/abs/data/file' or '../repo/data'.
+        """
+        for p in paths:
+            if not p:
+                continue
+            self._protected_raw.add(p)
+            self._protected_paths.add(_normalize_path(p))
 
     def check_action(self, action_type: str, target: str = "", **context) -> Decision:
         self._steps += 1
@@ -115,7 +142,12 @@ class ActionGuard:
         return decorator
 
     def _target_is_protected(self, target: str) -> bool:
-        return any(p in target for p in self._protected_paths)
+        if not target:
+            return False
+        if target in self._protected_raw:
+            return True
+        norm = _normalize_path(target)
+        return any(_is_under(norm, p) for p in self._protected_paths)
 
     def _record(self, allowed: bool, action_type: str, target: str, reason: str) -> Decision:
         decision = Decision(allowed, reason, matched=[f"{action_type}:{target}"] if target else [])

@@ -19,6 +19,7 @@ prev_hash, so the chain is only valid if every link is intact.
 
 import json
 import hashlib
+import threading
 import time
 from pathlib import Path
 
@@ -50,18 +51,20 @@ class Ledger:
             import secrets as _secrets
             self._secret_path.write_bytes(_secrets.token_bytes(32))
         self._head_secret = self._secret_path.read_bytes()
+        # append() is serialized by this lock and works from an in-memory
+        # cursor (count + tip hash), so concurrent writers (the proxy runs a
+        # threaded HTTP server) cannot both chain onto the same previous entry,
+        # and appending no longer re-reads the whole file each time. Two
+        # separate processes writing the same file are still not supported.
+        self._lock = threading.Lock()
+        entries = self._entries()
+        self._count = len(entries)
+        self._tip = entries[-1]["entry_hash"] if entries else self.GENESIS
 
     def _entries(self) -> list[dict]:
         """Read all entries from disk, in order."""
         lines = self.path.read_text().splitlines()
         return [json.loads(line) for line in lines if line.strip()]
-
-    def _last_hash(self) -> str:
-        """The entry_hash of the most recent entry, or GENESIS if empty."""
-        entries = self._entries()
-        if not entries:
-            return self.GENESIS
-        return entries[-1]["entry_hash"]
 
     def _sign_head(self, length: int, tip: str) -> str:
         """HMAC over (length, tip). Only someone with the secret can forge it."""
@@ -94,27 +97,30 @@ class Ledger:
 
         Returns the entry that was written.
         """
-        prev_hash = self._last_hash()
-        # The body is everything the entry asserts. We hash the body PLUS the
-        # previous hash to chain it. Sorting keys makes the hash deterministic.
-        body = {
-            "index": len(self._entries()),
-            "timestamp": time.time(),
-            "subject_id": subject_id,
-            "event_type": event_type,
-            "data_commitment": data_commitment,
-            "prev_hash": prev_hash,
-        }
-        body_bytes = json.dumps(body, sort_keys=True).encode()
-        entry = dict(body)
-        entry["entry_hash"] = _hash(body_bytes)
+        with self._lock:
+            # The body is everything the entry asserts. We hash the body PLUS
+            # the previous hash to chain it. Sorting keys makes the hash
+            # deterministic.
+            body = {
+                "index": self._count,
+                "timestamp": time.time(),
+                "subject_id": subject_id,
+                "event_type": event_type,
+                "data_commitment": data_commitment,
+                "prev_hash": self._tip,
+            }
+            body_bytes = json.dumps(body, sort_keys=True).encode()
+            entry = dict(body)
+            entry["entry_hash"] = _hash(body_bytes)
 
-        # Append as one JSON line.
-        with open(self.path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-        # Update the authenticated head so truncation becomes detectable.
-        self._write_head(entry["index"] + 1, entry["entry_hash"])
-        return entry
+            # Append as one JSON line.
+            with open(self.path, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+            self._count += 1
+            self._tip = entry["entry_hash"]
+            # Update the authenticated head so truncation becomes detectable.
+            self._write_head(self._count, self._tip)
+            return entry
 
     def verify(self) -> tuple[bool, str]:
         """
@@ -148,6 +154,14 @@ class Ledger:
         # match, and the attacker cannot have forged a new head without the
         # secret key.
         head = self._read_head()
+        if head is None and entries:
+            # A missing head is itself suspicious: an attacker who can chop
+            # entries off the log can also delete the head file. Refusing here
+            # means deleting the head cannot be used to hide a truncation.
+            return False, (
+                "head record missing: cannot rule out truncation "
+                f"(log has {len(entries)} entries but no authenticated head)"
+            )
         if head is not None:
             expected_mac = self._sign_head(head.get("length"), head.get("tip"))
             if head.get("mac") != expected_mac:
@@ -227,3 +241,36 @@ class Ledger:
         old_root = bytes.fromhex(bundle["old_root"])
         proof = [bytes.fromhex(h) for h in bundle["proof"]]
         return verify_consistency(old_root, bundle["old_size"], leaves, proof)
+
+    # ---- External anchoring: independent verifiability ----
+
+    def anchor(self, anchor) -> dict:
+        """
+        Publish the current Merkle root to an external anchor (see anchor.py)
+        and return a receipt. Keep the receipt: it is what lets a third party
+        confirm later that the first `size` entries were never rewritten.
+        """
+        from .merkle import merkle_root
+        leaves = self._leaves()
+        size = len(leaves)
+        root_hex = merkle_root(leaves).hex()
+        receipt = anchor.publish(size, root_hex)
+        return {"size": size, "root": root_hex, "anchor": receipt}
+
+    def check_anchor(self, receipt: dict, anchor=None) -> tuple[bool, str]:
+        """
+        Confirm the log still matches an earlier anchor receipt: the first
+        `size` entries must hash to the anchored root. With `anchor` given,
+        also confirm the anchor service really holds that root.
+        """
+        from .merkle import merkle_root
+        size, root_hex = receipt.get("size"), receipt.get("root")
+        leaves = self._leaves()
+        if not isinstance(size, int) or size < 0 or size > len(leaves):
+            return False, f"anchor covers {size} entries but the log has {len(leaves)}"
+        if merkle_root(leaves[:size]).hex() != root_hex:
+            return False, f"the first {size} entries no longer hash to the anchored root: history was rewritten"
+        if anchor is None:
+            return True, f"first {size} entries match the anchored root (anchor service not re-checked)"
+        ok, msg = anchor.verify(size, root_hex, receipt.get("anchor") or {})
+        return ok, msg

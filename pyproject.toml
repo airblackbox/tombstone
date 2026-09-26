@@ -1,11 +1,23 @@
 [project]
 name = "tombstone"
-version = "0.6.0"
-description = "Provable, crypto-shredded erasure on a tamper-evident ledger"
+version = "0.7.0"
+description = "Provable erasure for AI data pipelines: crypto-shred every copy, prove it on an externally anchored ledger, and guard the agents that touch the data"
 requires-python = ">=3.10"
 dependencies = ["cryptography>=42.0"]
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["gdpr", "erasure", "crypto-shredding", "audit-log", "ai-agents", "mcp", "transparency-log"]
+
+[project.urls]
+Homepage = "https://github.com/airblackbox/tombstone"
+
+[project.optional-dependencies]
+cockpit = ["flask"]
+langchain = ["langchain-core"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["tombstone", "tombstone.integrations"]

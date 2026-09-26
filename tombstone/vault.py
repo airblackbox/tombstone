@@ -203,12 +203,57 @@ class Vault:
 
         Records the event on the tamper-evident ledger.
         """
-        from .keystore import KeyStore  # local import to avoid cycles
         destroyed = self.keys.destroy_master()
         marker = _sha256(b"CRYPTO-ERASE-ALL")
         entry = self.ledger.append("system", "crypto_erase_all", marker)
         entry["master_destroyed"] = destroyed
         return entry
+
+    def erasure_certificate(self, subject_id: str, anchor=None) -> dict:
+        """
+        A self-contained proof that a subject was erased, suitable to hand to
+        a regulator or a customer:
+
+          - proof:      the prove_erased() bundle (key gone, ledger intact)
+          - inclusion:  a Merkle inclusion proof that the erase entry is in
+                        the log, verifiable with Ledger.check_inclusion()
+                        WITHOUT the rest of the log
+          - anchor:     if an anchor is given, a receipt showing the log's
+                        root (which commits to that erase entry) was
+                        published externally at this moment
+
+        Verify later with check_erasure_certificate().
+        """
+        proof = self.prove_erased(subject_id)
+        erase_event = proof.get("erase_event")
+        if erase_event is None:
+            raise ValueError(f"subject '{subject_id}' has no erase event on the ledger")
+        cert = {
+            "subject_id": subject_id,
+            "erased": (not proof["key_present"]) and proof["ledger_intact"],
+            "proof": proof,
+            "inclusion": self.ledger.prove_inclusion(erase_event["index"]),
+            "anchor": self.ledger.anchor(anchor) if anchor is not None else None,
+        }
+        return cert
+
+    def check_erasure_certificate(self, cert: dict, anchor=None) -> tuple[bool, str]:
+        """Re-check a certificate against the current ledger."""
+        if not Ledger.check_inclusion(cert["inclusion"]):
+            return False, "inclusion proof does not verify: the erase entry is not in the log"
+        if cert["inclusion"]["entry_hash"] != cert["proof"]["erase_event"]["entry_hash"]:
+            return False, "inclusion proof is for a different entry than the erase event"
+        if self.keys.has_key(cert["subject_id"]):
+            return False, "subject key is present again: data is readable"
+        intact, detail = self.ledger.verify()
+        if not intact:
+            return False, f"ledger no longer verifies: {detail}"
+        if cert.get("anchor") is not None:
+            ok, msg = self.ledger.check_anchor(cert["anchor"], anchor)
+            if not ok:
+                return False, msg
+            return True, f"erasure of '{cert['subject_id']}' proven; {msg}"
+        return True, f"erasure of '{cert['subject_id']}' proven (no external anchor)"
 
     def prove_erased(self, subject_id: str) -> dict:
         """

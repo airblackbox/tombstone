@@ -18,3 +18,7 @@ dist/
 
 # pytest
 .pytest_cache/
+
+# Anchoring: the Rekor signing key is private; receipts are per-machine
+*.pem
+.tombstone_anchors/
