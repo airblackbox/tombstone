@@ -62,9 +62,13 @@ class Policy:
         self._blocked_dests.update(hosts)
 
     def _dest_is_blocked(self, dest: str) -> bool:
-        # Match on host substring so "us-analytics.example.com:443" still hits
-        # a rule written as "us-analytics.example.com".
-        return any(b in dest for b in self._blocked_dests)
+        # "*" restricts every destination (used by the MCP proxy, where every
+        # tool is a place personal data must not go). Otherwise match on host
+        # substring so "us-analytics.example.com:443" still hits a rule
+        # written as "us-analytics.example.com".
+        if "*" in self._blocked_dests:
+            return True
+        return any(b in dest for b in self._blocked_dests if b)
 
     def check_payload(self, dest: str, payload: str) -> Decision:
         """
