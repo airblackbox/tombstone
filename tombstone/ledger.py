@@ -241,3 +241,36 @@ class Ledger:
         old_root = bytes.fromhex(bundle["old_root"])
         proof = [bytes.fromhex(h) for h in bundle["proof"]]
         return verify_consistency(old_root, bundle["old_size"], leaves, proof)
+
+    # ---- External anchoring: independent verifiability ----
+
+    def anchor(self, anchor) -> dict:
+        """
+        Publish the current Merkle root to an external anchor (see anchor.py)
+        and return a receipt. Keep the receipt: it is what lets a third party
+        confirm later that the first `size` entries were never rewritten.
+        """
+        from .merkle import merkle_root
+        leaves = self._leaves()
+        size = len(leaves)
+        root_hex = merkle_root(leaves).hex()
+        receipt = anchor.publish(size, root_hex)
+        return {"size": size, "root": root_hex, "anchor": receipt}
+
+    def check_anchor(self, receipt: dict, anchor=None) -> tuple[bool, str]:
+        """
+        Confirm the log still matches an earlier anchor receipt: the first
+        `size` entries must hash to the anchored root. With `anchor` given,
+        also confirm the anchor service really holds that root.
+        """
+        from .merkle import merkle_root
+        size, root_hex = receipt.get("size"), receipt.get("root")
+        leaves = self._leaves()
+        if not isinstance(size, int) or size < 0 or size > len(leaves):
+            return False, f"anchor covers {size} entries but the log has {len(leaves)}"
+        if merkle_root(leaves[:size]).hex() != root_hex:
+            return False, f"the first {size} entries no longer hash to the anchored root: history was rewritten"
+        if anchor is None:
+            return True, f"first {size} entries match the anchored root (anchor service not re-checked)"
+        ok, msg = anchor.verify(size, root_hex, receipt.get("anchor") or {})
+        return ok, msg
